@@ -7,58 +7,60 @@ from streamlit_autorefresh import st_autorefresh
 
 warnings.filterwarnings('ignore')
 
-# UYGULAMA EKRAN AYARLARI (Geniş Ekran)
 st.set_page_config(page_title="Pro Altın Radarı", page_icon="🎯", layout="wide")
-st.title("🎯 Pro Altın Radarı (Otomatik)")
+st.title("🎯 Pro Altın Radarı (İndikatörlü)")
 
-# SİSTEMİ 60 SANİYEDE BİR SESSİZCE YENİLE
 st_autorefresh(interval=60 * 1000, key="otomatik_yenileme")
 
 def veri_cek():
     tv = TvDatafeed()
-    df_1W = tv.get_hist(symbol='XAUUSD', exchange='OANDA', interval=Interval.in_weekly, n_bars=5)
-    df_1D = tv.get_hist(symbol='XAUUSD', exchange='OANDA', interval=Interval.in_daily, n_bars=5)
-    df_4H = tv.get_hist(symbol='XAUUSD', exchange='OANDA', interval=Interval.in_4_hour, n_bars=5)
     df_canli = tv.get_hist(symbol='XAUUSD', exchange='OANDA', interval=Interval.in_1_minute, n_bars=120)
+    # Destek/Direnç için günlük veri
+    df_gunluk = tv.get_hist(symbol='XAUUSD', exchange='OANDA', interval=Interval.in_daily, n_bars=20)
     
-    return df_canli, df_1W, df_1D, df_4H
+    # İNDİKATÖR HESAPLAMALARI
+    df = df_canli.copy()
+    df['Close'] = df['close'].astype(float)
+    
+    # Bollinger Bantları
+    df['SMA_20'] = df['Close'].rolling(window=20).mean()
+    df['std'] = df['Close'].rolling(window=20).std()
+    df['Bol_Ust'] = df['SMA_20'] + (df['std'] * 2)
+    df['Bol_Alt'] = df['SMA_20'] - (df['std'] * 2)
+    
+    # RSI
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    return df, df_gunluk['high'].max(), df_gunluk['low'].min()
 
 try:
-    with st.spinner("Piyasalar Taranıyor..."):
-        df_canli, df_1W, df_1D, df_4H = veri_cek()
-        son_fiyat = float(df_canli['close'].iloc[-1])
-        onceki_fiyat = float(df_canli['close'].iloc[-2])
-        fiyat_farki = son_fiyat - onceki_fiyat
+    with st.spinner("İndikatörler hesaplanıyor..."):
+        df, direnc, destek = veri_cek()
+        son = df.iloc[-1]
     
-    st.metric(label="XAUUSD (Spot Altın)", value=f"{son_fiyat:.2f} USD", delta=f"{fiyat_farki:.2f} USD")
-    st.markdown("---")
+    # Özet Panosu
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Fiyat", f"{son['Close']:.2f}")
+    c2.metric("RSI", f"{son['RSI']:.1f}")
+    c3.metric("Trend", "Pozitif" if son['Close'] > son['SMA_20'] else "Negatif")
 
-    st.markdown("### 📊 Kritik Seviyeler (Otomatik)")
-    k1, k2, k3 = st.columns(3)
-    k1.info(f"**4 SAATLİK (Kısa)**\n\n🔴 Direnç: {df_4H['high'].iloc[-2]:.2f}\n\n🟢 Destek: {df_4H['low'].iloc[-2]:.2f}")
-    k2.warning(f"**1 GÜNLÜK (Orta)**\n\n🔴 Direnç: {df_1D['high'].iloc[-2]:.2f}\n\n🟢 Destek: {df_1D['low'].iloc[-2]:.2f}")
-    k3.error(f"**1 HAFTALIK (Uzun)**\n\n🔴 Direnç: {df_1W['high'].iloc[-2]:.2f}\n\n🟢 Destek: {df_1W['low'].iloc[-2]:.2f}")
-    st.markdown("---")
+    # Grafik
+    fig = go.Figure()
+    # Mumlar
+    fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['Close'], name='Fiyat'))
+    # Bollinger
+    fig.add_trace(go.Scatter(x=df.index, y=df['Bol_Ust'], line=dict(color='gray', width=1), name='Bollinger Üst'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['Bol_Alt'], line=dict(color='gray', width=1), name='Bollinger Alt'))
+    # Destek/Direnç
+    fig.add_hline(y=direnc, line_dash="dash", line_color="red", annotation_text="Direnç")
+    fig.add_hline(y=destek, line_dash="dash", line_color="green", annotation_text="Destek")
 
-    fig = go.Figure(data=[go.Candlestick(
-        x=df_canli.index,
-        open=df_canli['open'],
-        high=df_canli['high'],
-        low=df_canli['low'],
-        close=df_canli['close'],
-        name='Canlı',
-        increasing_line_color='#089981', 
-        decreasing_line_color='#F23645'  
-    )])
-    
-    fig.update_layout(
-        template='plotly_dark',
-        height=450,
-        margin=dict(l=0, r=0, t=30, b=0),
-        xaxis_rangeslider_visible=False 
-    )
-    
+    fig.update_layout(template='plotly_dark', xaxis_rangeslider_visible=False, height=500)
     st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
-    st.error(f"Bağlantı hatası: {e}")
+    st.error(f"Hata: {e}")
